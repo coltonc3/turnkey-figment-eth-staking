@@ -8,7 +8,7 @@ const { ApiKeyStamper } = require("@turnkey/api-key-stamper");
 
 const myStakeAmount = 32;
 const turnkeyUrl = 'https://api.turnkey.com';
-const figmentApiUrl = 'https://eth-slate.datahub.staging.figment.io/api/v1/flows';
+const figmentApiUrl = 'https://eth-slate.datahub.figment.io/api/v1/flows';
 const figmentApiHeaders = {
   Authorization: process.env.FIG_APIKEY,
   'Content-Type': 'application/json'
@@ -109,20 +109,19 @@ async function broadcastStakingTx(flowId, transactionPayload) {
     })
   );
 
-  // get pubkey from turnkey https://docs.turnkey.com/api#tag/Private-Keys/operation/GetPrivateKey
-  const privateKey = await turnkeyClient.getPrivateKey({organizationId: process.env.TK_ORGANIZATION_ID, privateKeyId: process.env.TK_ETH_KEY_ID});
-  const fundingAddress = privateKey.privateKey.addresses[0].address;
-  const withdrawalAddress = fundingAddress;
-  console.log("Funding address: " + fundingAddress);
-  console.log("Withdrawal address: " + withdrawalAddress);
-  console.log('Stake amount: ' + myStakeAmount);
-
   // create turnkey signer
   const turnkeySigner = new TurnkeySigner({
     client: turnkeyClient,
     organizationId: process.env.TK_ORGANIZATION_ID,
     signWith: process.env.TK_ETH_KEY_ID,
   });
+
+  // get pubkey from turnkey
+  const fundingAddress = await turnkeySigner.getAddress();
+  const withdrawalAddress = fundingAddress;
+  console.log("Funding address: " + fundingAddress);
+  console.log("Withdrawal address: " + withdrawalAddress);
+  console.log('Stake amount: ' + myStakeAmount);
 
   // create flow
   const flowId = await createStakingFlow('ethereum', 'goerli', 'aggregated_staking');
@@ -137,5 +136,4 @@ async function broadcastStakingTx(flowId, transactionPayload) {
   const broadcastedFlow = await broadcastStakingTx(flowId, transactionPayload);
   console.log('Tx hash: ' + broadcastedFlow.data.aggregated_deposit_transaction.hash);
   console.log("Estimated activation: " + broadcastedFlow.data.estimated_active_at);
-  
 })();
