@@ -5,6 +5,7 @@ const axios = require('axios').default;
 const { TurnkeySigner } = require("@turnkey/ethers");
 const { TurnkeyClient } = require("@turnkey/http");
 const { ApiKeyStamper } = require("@turnkey/api-key-stamper");
+const { signTransaction } = require('@turnkey/http/dist/__generated__/services/coordinator/public/v1/public_api.fetcher');
 
 const myStakeAmount = 32;
 const turnkeyUrl = 'https://api.turnkey.com';
@@ -65,6 +66,30 @@ async function getRawStakingTx(flowId, fundingAddress, withdrawalAddress, stakeA
   }
 }
 
+async function signTransaction(rawTx) {
+  // create turnkey client
+  const turnkeyClient = new TurnkeyClient(
+    {
+      baseUrl: turnkeyUrl,
+    },
+    new ApiKeyStamper({
+      apiPublicKey: process.env.TK_API_PUBKEY,
+      apiPrivateKey: process.env.TK_API_PRIVKEY,
+    })
+  );
+
+  // create turnkey signer
+  const turnkeySigner = new TurnkeySigner({
+    client: turnkeyClient,
+    organizationId: process.env.TK_ORGANIZATION_ID,
+    signWith: process.env.TK_ETH_KEY_ID,
+  });
+  // sign raw tx with turnkey: https://docs.turnkey.com/api#tag/Signers/operation/SignRawPayload
+  const signedTx = await turnkeySigner._signTransactionImpl(rawTx);
+  console.log('Signed tx: ' + signedTx);
+  return signedTx;
+}
+
 async function broadcastStakingTx(flowId, transactionPayload) {
   let flow = await axios.put(`${figmentApiUrl}/${flowId}/next`, {
     name: 'sign_aggregated_deposit_tx',
@@ -98,24 +123,6 @@ async function broadcastStakingTx(flowId, transactionPayload) {
     3. create ethereum private key (turnkey CLI)
   */
 
-  // create turnkey client
-  const turnkeyClient = new TurnkeyClient(
-    {
-      baseUrl: turnkeyUrl,
-    },
-    new ApiKeyStamper({
-      apiPublicKey: process.env.TK_API_PUBKEY,
-      apiPrivateKey: process.env.TK_API_PRIVKEY,
-    })
-  );
-
-  // create turnkey signer
-  const turnkeySigner = new TurnkeySigner({
-    client: turnkeyClient,
-    organizationId: process.env.TK_ORGANIZATION_ID,
-    signWith: process.env.TK_ETH_KEY_ID,
-  });
-
   // get pubkey from turnkey
   const fundingAddress = await turnkeySigner.getAddress();
   const withdrawalAddress = fundingAddress;
@@ -127,9 +134,8 @@ async function broadcastStakingTx(flowId, transactionPayload) {
   const flowId = await createStakingFlow('ethereum', 'goerli', 'aggregated_staking');
   // get raw staking tx
   const rawTx = await getRawStakingTx(flowId, fundingAddress, withdrawalAddress, myStakeAmount);
-  // sign raw tx with turnkey: https://docs.turnkey.com/api#tag/Signers/operation/SignRawPayload
-  const signedTx = await turnkeySigner._signTransactionImpl(rawTx);
-  console.log('Signed tx: ' + signedTx);
+  // sign raw staking tx
+  const signedTx = await signTransaction(rawTx);
   // prepend 0x for Figment API
   const transactionPayload = '0x' + signedTx;
   // broadcast tx
