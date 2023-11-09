@@ -1,43 +1,56 @@
-require('dotenv').config();
-const axios = require('axios').default;
-
 // Turnkey packages: https://github.com/tkhq/sdk/tree/main/packages/ethers
 const { TurnkeySigner } = require("@turnkey/ethers");
 const { TurnkeyClient } = require("@turnkey/http");
 const { ApiKeyStamper } = require("@turnkey/api-key-stamper");
-const { signTransaction } = require('@turnkey/http/dist/__generated__/services/coordinator/public/v1/public_api.fetcher');
+require('dotenv').config();
+const axios = require('axios');
 
-const myStakeAmount = 32;
-const turnkeyUrl = 'https://api.turnkey.com';
-const figmentApiUrl = 'https://eth-slate.datahub.figment.io/api/v1/flows';
-const figmentApiHeaders = {
-  Authorization: process.env.FIG_APIKEY,
-  'Content-Type': 'application/json'
+const MY_STAKE_AMOUNT = 32;
+const TURNKEY_URL = 'https://api.turnkey.com';
+const FIGMENT_API_URL = 'https://eth-slate.datahub.figment.io/api/v1/flows';
+const FIGMENT_API_HEADERS = {
+  headers: {
+    'Authorization': process.env.FIGMENT_API_KEY,
+    'Content-Type': 'application/json'
+  }
 }
 
+const turnkeyClient = new TurnkeyClient(
+  {
+    baseUrl: TURNKEY_URL,
+  },
+  new ApiKeyStamper({
+    apiPublicKey: process.env.TK_API_PUBKEY,
+    apiPrivateKey: process.env.TK_API_PRIVKEY,
+  })
+);
+const turnkeySigner = new TurnkeySigner({
+  client: turnkeyClient,
+  organizationId: process.env.TK_ORGANIZATION_ID,
+  signWith: process.env.TK_ETH_ADDRESS,
+});
+
 async function createStakingFlow(networkCode, chainCode, operation) {
-  const flow = await axios.post(figmentApiUrl, {
+  return await axios.post(FIGMENT_API_URL, {
     flow: {
       network_code: networkCode,
       chain_code: chainCode,
       operation: operation
     }
   }, 
-  {
-    headers: figmentApiHeaders
-  });
-  const flowId = flow.data.id
-  console.log('Staking flow ID: ' + flowId);
-  return flowId;
+  FIGMENT_API_HEADERS
+  ).then(flow => {
+    console.log(`Staking flow ID: ${flow.data.id}`);
+    return flow.data.id;
+  })
 }
 
 async function getStakingFlow(flowId) {
-  const flow = await axios.get(`${figmentApiUrl}/${flowId}`, { headers: figmentApiHeaders })
-  return flow.data;
+  return await axios.get(`${FIGMENT_API_URL}/${flowId}`, FIGMENT_API_HEADERS).then(flow => flow.data);
 }
 
 async function getRawStakingTx(flowId, fundingAddress, withdrawalAddress, stakeAmount) {
-  let flow = await axios.put(`${figmentApiUrl}/${flowId}/next`, {
+  let flow = await axios.put(`${FIGMENT_API_URL}/${flowId}/next`, {
     name: 'assign_staking_data',
     inputs: {
       funding_account_address: fundingAddress,
@@ -45,72 +58,54 @@ async function getRawStakingTx(flowId, fundingAddress, withdrawalAddress, stakeA
       amount: stakeAmount
     }
   },
-  {
-    headers: figmentApiHeaders
-  });
+  FIGMENT_API_HEADERS
+  );
   let flowState = flow.data.state;
-  console.log('Staking flow state: ' + flowState);
+  console.log(`Staking flow state: ${flowState}`);
   // poll until validators are provisioned
   while(flowState == 'awaiting_provision') {
     flow = await getStakingFlow(flowId);
     flowState = flow.state;
-    console.log('Staking flow state: ' + flowState);
+    console.log(`Staking flow state: ${flowState}`);
   }
   flow = await getStakingFlow(flowId);
   if(flow.state == 'aggregated_deposit_tx_signature') {
-    console.log('Staking flow state: ' + flow.state);
+    console.log(`Staking flow state: ${flow.state}`);
     // strip prepended 0x so Turnkey can parse
     const rawTx = flow.data.aggregated_deposit_transaction.raw.substr(2)
-    console.log('Raw staking tx: ' + rawTx)
+    console.log(`Raw staking tx: ${rawTx}`)
     return rawTx;
   }
 }
 
 async function signTransaction(rawTx) {
-  // create turnkey client
-  const turnkeyClient = new TurnkeyClient(
-    {
-      baseUrl: turnkeyUrl,
-    },
-    new ApiKeyStamper({
-      apiPublicKey: process.env.TK_API_PUBKEY,
-      apiPrivateKey: process.env.TK_API_PRIVKEY,
-    })
-  );
-
-  // create turnkey signer
-  const turnkeySigner = new TurnkeySigner({
-    client: turnkeyClient,
-    organizationId: process.env.TK_ORGANIZATION_ID,
-    signWith: process.env.TK_ETH_KEY_ID,
-  });
   // sign raw tx with turnkey: https://docs.turnkey.com/api#tag/Signers/operation/SignRawPayload
-  const signedTx = await turnkeySigner._signTransactionImpl(rawTx);
-  console.log('Signed tx: ' + signedTx);
-  return signedTx;
+  return await turnkeySigner._signTransactionImpl(rawTx).then(signedTx => {
+    // prepend 0x for Figment API to parse
+    console.log(`Signed tx: 0x${signedTx}`);
+    return `0x${signedTx}`;
+  });
 }
 
 async function broadcastStakingTx(flowId, transactionPayload) {
-  let flow = await axios.put(`${figmentApiUrl}/${flowId}/next`, {
+  let flow = await axios.put(`${FIGMENT_API_URL}/${flowId}/next`, {
     name: 'sign_aggregated_deposit_tx',
     inputs: {
       transaction_payload: transactionPayload
     }
   },
-  {
-    headers: figmentApiHeaders
-  })
+  FIGMENT_API_HEADERS
+  );
 
   let flowState = flow.data.state;
-  console.log('Staking flow state: ' + flowState);
+  console.log(`Staking flow state: ` + flowState);
   while(flowState == 'aggregated_deposit_tx_broadcasting') {
     flow = await getStakingFlow(flowId);
-    flowState = flow.state
-    console.log('Staking flow state: ' + flowState);
+    console.log(`Staking flow state: ${flow.state}`);
   }
   flow = await getStakingFlow(flowId);
   if(flow.state == 'activating') {
-    console.log('Staking flow state: ' + flow.state);
+    console.log(`Staking flow state: ${flow.state}`);
     return flow;
   }
 }
@@ -118,28 +113,18 @@ async function broadcastStakingTx(flowId, transactionPayload) {
 (async () => {
   /* 
   prerequisites: 
-    1. create turnkey account (turnkey UI)
-    2. create turnkey api key (turnkey UI)
-    3. create ethereum private key (turnkey CLI)
+    1. Create Turnkey account (turnkey UI)
+    2. Create Turnkey API key (turnkey UI)
+    3. Create Ethereum wallet or private key with Turnkey
   */
 
-  // get pubkey from turnkey
+  // get wallet pubkey from Turnkey
   const fundingAddress = await turnkeySigner.getAddress();
   const withdrawalAddress = fundingAddress;
-  console.log("Funding address: " + fundingAddress);
-  console.log("Withdrawal address: " + withdrawalAddress);
-  console.log('Stake amount: ' + myStakeAmount);
 
-  // create flow
-  const flowId = await createStakingFlow('ethereum', 'goerli', 'aggregated_staking');
-  // get raw staking tx
-  const rawTx = await getRawStakingTx(flowId, fundingAddress, withdrawalAddress, myStakeAmount);
-  // sign raw staking tx
-  const signedTx = await signTransaction(rawTx);
-  // prepend 0x for Figment API
-  const transactionPayload = '0x' + signedTx;
-  // broadcast tx
-  const broadcastedFlow = await broadcastStakingTx(flowId, transactionPayload);
-  console.log('Tx hash: ' + broadcastedFlow.data.aggregated_deposit_transaction.hash);
-  console.log("Estimated activation: " + broadcastedFlow.data.estimated_active_at);
+  createStakingFlow('ethereum', 'goerli', 'aggregated_staking')
+  .then(flowId => getRawStakingTx(flowId, fundingAddress, withdrawalAddress, MY_STAKE_AMOUNT)
+  .then(rawTx => signTransaction(rawTx)
+  .then(signedTx => broadcastStakingTx(flowId, signedTx))))
+  .then(flow => console.log(`Tx hash: ${flow.data.aggregated_deposit_transaction.hash}`))
 })();
